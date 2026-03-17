@@ -2,205 +2,314 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>УБЕГАЙ ОТ ЗОЛИКОВ · вечное хранилище</title>
-    <style>/* все стили оставляем такими же */</style>
+    <title>УБЕГАЙ ОТ ЗОЛИКОВ · вечное хранилище (исправлено)</title>
+    <style>
+        /* Базовые стили, чтобы страница выглядела нормально даже при ошибках */
+        body {
+            background: #f9e56c;
+            font-family: sans-serif;
+            padding: 20px;
+            margin: 0;
+        }
+        .container {
+            max-width: 800px;
+            margin: auto;
+            background: #fff9d7;
+            border-radius: 40px;
+            padding: 30px;
+            box-shadow: 0 20px 0 #b47d00;
+            border: 4px solid #ffaa00;
+        }
+        h1 {
+            color: #2c1c00;
+            text-shadow: 3px 3px 0 #ffaa00;
+        }
+        .upload-area {
+            background: #ffde7a;
+            border-radius: 30px;
+            padding: 20px;
+            margin: 20px 0;
+            border: 3px dashed #b47d00;
+        }
+        .status {
+            background: #ffcf5c;
+            border-radius: 20px;
+            padding: 15px;
+            margin: 15px 0;
+            font-weight: bold;
+            border: 2px solid #a86400;
+        }
+        button {
+            background: #f5b300;
+            border: none;
+            font-size: 2rem;
+            padding: 15px 30px;
+            border-radius: 60px;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 10px 0 #b06f00;
+            margin: 10px;
+            border: 2px solid #ffdd88;
+        }
+        button:active {
+            transform: translateY(5px);
+            box-shadow: 0 5px 0 #b06f00;
+        }
+        .delete-btn {
+            background: #ff7b00;
+            box-shadow: 0 10px 0 #a04f00;
+        }
+        .error {
+            color: #a00;
+            background: #ffe0e0;
+            padding: 10px;
+            border-radius: 20px;
+        }
+    </style>
 </head>
 <body>
-    <!-- вся разметка без изменений -->
+    <div class="container">
+        <h1>УБЕГАЙ ОТ ЗОЛИКОВ!</h1>
+        <p><strong>Версия 1.0 (багнутая дома)</strong> — файл сохраняется навсегда в вашем браузере.</p>
+
+        <div class="upload-area">
+            <h2>📦 Загрузи свой ZIP (навсегда)</h2>
+            <input type="file" id="zipInput" accept=".zip,.7z,.rar">
+            <div class="status" id="status">⏳ Проверка хранилища...</div>
+        </div>
+
+        <div>
+            <button id="downloadBtn">⬇️ СКАЧАТЬ ФАЙЛ</button>
+            <button id="deleteBtn" class="delete-btn">🗑️ УДАЛИТЬ ФАЙЛ</button>
+        </div>
+
+        <p style="margin-top:30px;">🖼️ Загрузка картинки (просто для красоты):</p>
+        <input type="file" id="imageInput" accept="image/*">
+        <div id="imagePreview" style="margin-top:20px;"></div>
+    </div>
+
     <script>
-        // ==================== РАБОТА С INDEXEDDB (улучшенная) ====================
+        // ==== ПРОСТАЯ РАБОТА С INDEXEDDB (без сложных async/await, с колбэками) ====
+
+        // Глобальные переменные
+        let currentFileBlob = null;
+        let currentFileName = '';
+
+        const statusDiv = document.getElementById('status');
+        const zipInput = document.getElementById('zipInput');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const deleteBtn = document.getElementById('deleteBtn');
+        const imageInput = document.getElementById('imageInput');
+        const imagePreview = document.getElementById('imagePreview');
+
+        // Имя базы данных и хранилища
         const DB_NAME = 'ZolikiGameDB';
         const DB_VERSION = 1;
         const STORE_NAME = 'files';
+        const FILE_KEY = 'gameZip';
 
-        // Функция для получения подключения к БД (всегда открывает, если закрыто)
-        async function getDB() {
-            return new Promise((resolve, reject) => {
-                const request = indexedDB.open(DB_NAME, DB_VERSION);
-                request.onerror = () => reject('Ошибка открытия БД');
-                request.onsuccess = () => resolve(request.result);
-                request.onupgradeneeded = (event) => {
-                    const db = event.target.result;
-                    if (!db.objectStoreNames.contains(STORE_NAME)) {
-                        db.createObjectStore(STORE_NAME);
-                    }
-                };
-            });
+        // ---------- Открытие базы данных (возвращает открытое соединение через колбэк) ----------
+        function openDB(callback, onerror) {
+            if (!window.indexedDB) {
+                onerror('IndexedDB не поддерживается в этом браузере');
+                return;
+            }
+            const request = indexedDB.open(DB_NAME, DB_VERSION);
+            request.onerror = function(event) {
+                onerror('Ошибка открытия БД: ' + event.target.error);
+            };
+            request.onsuccess = function(event) {
+                const db = event.target.result;
+                callback(db);
+            };
+            request.onupgradeneeded = function(event) {
+                const db = event.target.result;
+                if (!db.objectStoreNames.contains(STORE_NAME)) {
+                    db.createObjectStore(STORE_NAME);
+                }
+            };
         }
 
-        // Сохранить файл
-        async function saveFileToDB(blob, fileName) {
-            const db = await getDB();
-            return new Promise((resolve, reject) => {
+        // ---------- Сохранить файл в БД ----------
+        function saveFileToDB(blob, fileName, callback, onerror) {
+            openDB(function(db) {
                 const tx = db.transaction(STORE_NAME, 'readwrite');
                 const store = tx.objectStore(STORE_NAME);
-                const fileData = { blob, name: fileName, timestamp: Date.now() };
-                const request = store.put(fileData, 'gameZip');
-                request.onsuccess = () => resolve();
-                request.onerror = () => reject('Ошибка сохранения в БД');
-                tx.oncomplete = () => db.close(); // закрываем после завершения
-            });
+                const fileData = { blob: blob, name: fileName };
+                const request = store.put(fileData, FILE_KEY);
+                request.onsuccess = function() {
+                    callback();
+                    db.close();
+                };
+                request.onerror = function() {
+                    onerror('Ошибка сохранения файла');
+                    db.close();
+                };
+            }, onerror);
         }
 
-        // Загрузить файл
-        async function loadFileFromDB() {
-            const db = await getDB();
-            return new Promise((resolve, reject) => {
+        // ---------- Загрузить файл из БД ----------
+        function loadFileFromDB(callback, onerror) {
+            openDB(function(db) {
                 const tx = db.transaction(STORE_NAME, 'readonly');
                 const store = tx.objectStore(STORE_NAME);
-                const request = store.get('gameZip');
-                request.onsuccess = () => resolve(request.result || null);
-                request.onerror = () => reject('Ошибка чтения из БД');
-                tx.oncomplete = () => db.close();
-            });
+                const request = store.get(FILE_KEY);
+                request.onsuccess = function(event) {
+                    const result = event.target.result;
+                    if (result) {
+                        callback(result.blob, result.name);
+                    } else {
+                        callback(null, null);
+                    }
+                    db.close();
+                };
+                request.onerror = function() {
+                    onerror('Ошибка чтения файла');
+                    db.close();
+                };
+            }, onerror);
         }
 
-        // Удалить файл
-        async function deleteFileFromDB() {
-            const db = await getDB();
-            return new Promise((resolve, reject) => {
+        // ---------- Удалить файл из БД ----------
+        function deleteFileFromDB(callback, onerror) {
+            openDB(function(db) {
                 const tx = db.transaction(STORE_NAME, 'readwrite');
                 const store = tx.objectStore(STORE_NAME);
-                const request = store.delete('gameZip');
-                request.onsuccess = () => resolve();
-                request.onerror = () => reject('Ошибка удаления из БД');
-                tx.oncomplete = () => db.close();
-            });
+                const request = store.delete(FILE_KEY);
+                request.onsuccess = function() {
+                    callback();
+                    db.close();
+                };
+                request.onerror = function() {
+                    onerror('Ошибка удаления файла');
+                    db.close();
+                };
+            }, onerror);
         }
 
-        // ==================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ====================
-        let uploadedZipBlob = null;
-        let uploadedZipName = '';
-        const zipStatus = document.getElementById('zipStatus');
-
-        // ==================== ВОССТАНОВЛЕНИЕ ПРИ ЗАГРУЗКЕ ====================
-        window.addEventListener('load', async () => {
-            try {
-                const saved = await loadFileFromDB();
-                if (saved) {
-                    uploadedZipBlob = saved.blob;
-                    uploadedZipName = saved.name;
-                    zipStatus.innerHTML = `✅ ВЕЧНОСТЬ: <strong>${saved.name}</strong> (${(saved.blob.size / 1024 / 1024).toFixed(2)} MB)`;
-                } else {
-                    zipStatus.innerHTML = '😴 файл не загружен (место для вечности пустует)';
-                }
-            } catch (e) {
-                console.error(e);
-                zipStatus.innerHTML = '❌ ошибка доступа к хранилищу';
+        // ---------- Обновить статус на странице ----------
+        function updateStatus(text, isError = false) {
+            statusDiv.innerHTML = text;
+            if (isError) {
+                statusDiv.style.background = '#ffb3b3';
+            } else {
+                statusDiv.style.background = '#ffcf5c';
             }
+        }
+
+        // ---------- При загрузке страницы пытаемся восстановить файл ----------
+        window.addEventListener('load', function() {
+            updateStatus('⏳ Загрузка сохранённого файла...');
+            loadFileFromDB(function(blob, name) {
+                if (blob && name) {
+                    currentFileBlob = blob;
+                    currentFileName = name;
+                    const sizeMB = (blob.size / 1024 / 1024).toFixed(2);
+                    updateStatus(`✅ Восстановлен: ${name} (${sizeMB} MB)`);
+                } else {
+                    updateStatus('😴 Нет сохранённого файла');
+                }
+            }, function(errMsg) {
+                updateStatus('❌ Ошибка при загрузке из хранилища: ' + errMsg, true);
+                console.error(errMsg);
+            });
         });
 
-        // ==================== ЗАГРУЗКА НОВОГО ФАЙЛА ====================
-        const zipInput = document.getElementById('zipUpload');
-        zipInput.addEventListener('change', async function(event) {
-            const file = event.target.files[0];
+        // ---------- Загрузка нового файла через input ----------
+        zipInput.addEventListener('change', function(e) {
+            const file = e.target.files[0];
             if (!file) return;
 
-            if (!file.name.toLowerCase().endsWith('.zip') && !file.name.toLowerCase().endsWith('.7z') && !file.name.toLowerCase().endsWith('.rar')) {
-                zipStatus.innerHTML = '❌ нужен ZIP / 7z / RAR';
+            // Проверка расширения (необязательно)
+            const ext = file.name.split('.').pop().toLowerCase();
+            if (!['zip', '7z', 'rar'].includes(ext)) {
+                updateStatus('❌ Пожалуйста, выберите ZIP, 7z или RAR файл', true);
                 return;
             }
 
-            try {
-                await saveFileToDB(file, file.name);
-                uploadedZipBlob = file;
-                uploadedZipName = file.name;
-                zipStatus.innerHTML = `✅ сохранён НАВСЕГДА: <strong>${file.name}</strong> (${(file.size / 1024 / 1024).toFixed(2)} MB)`;
-            } catch (e) {
-                console.error(e);
-                zipStatus.innerHTML = '❌ ошибка сохранения в хранилище';
-            }
+            updateStatus(`⏳ Сохранение файла ${file.name}...`);
+
+            saveFileToDB(file, file.name, function() {
+                currentFileBlob = file;
+                currentFileName = file.name;
+                const sizeMB = (file.size / 1024 / 1024).toFixed(2);
+                updateStatus(`✅ Файл сохранён навсегда: ${file.name} (${sizeMB} MB)`);
+            }, function(errMsg) {
+                updateStatus('❌ Ошибка сохранения: ' + errMsg, true);
+            });
         });
 
-        // ==================== СКАЧИВАНИЕ ====================
-        window.downloadGame = function() {
-            if (uploadedZipBlob) {
-                const url = URL.createObjectURL(uploadedZipBlob);
+        // ---------- Кнопка СКАЧАТЬ ----------
+        downloadBtn.addEventListener('click', function() {
+            if (currentFileBlob) {
+                const url = URL.createObjectURL(currentFileBlob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = uploadedZipName;
+                a.download = currentFileName;
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
                 URL.revokeObjectURL(url);
             } else {
-                alert('Сначала загрузи свой ZIP! А пока — демо-версия (пустышка)');
-                const fakeZipContent = 'UEsDBAoAAAAAADpGQFQAAAAAAAAAAAAAAAAFABwAZW1wdHlVVAkAA/0RZGZ9EWRmdXgLAAEE6AMAAAToAwAAUEsBAh4DCgAAAAAAOkZAVAAAAAAAAAAAAAAAAAUAGAAAAAAAAAAAAKSBAAAAAGVtcHR5VVQFAAP9EWRmdXgLAAEE6AMAAAToAwAAUEsFBgAAAAABAAEATgAAAC8AAAAAAA==';
+                // Если нет файла, скачиваем демо-заглушку
+                alert('Нет сохранённого файла. Скачивается демо-версия (пустышка).');
+                const fakeZipBase64 = 'UEsDBAoAAAAAADpGQFQAAAAAAAAAAAAAAAAFABwAZW1wdHlVVAkAA/0RZGZ9EWRmdXgLAAEE6AMAAAToAwAAUEsBAh4DCgAAAAAAOkZAVAAAAAAAAAAAAAAAAAUAGAAAAAAAAAAAAKSBAAAAAGVtcHR5VVQFAAP9EWRmdXgLAAEE6AMAAAToAwAAUEsFBgAAAAABAAEATgAAAC8AAAAAAA==';
                 const link = document.createElement('a');
-                link.href = 'data:application/zip;base64,' + fakeZipContent;
+                link.href = 'data:application/zip;base64,' + fakeZipBase64;
                 link.download = 'Zoliki_demo_bug_v1.zip';
                 document.body.appendChild(link);
                 link.click();
                 document.body.removeChild(link);
             }
-        };
+        });
 
-        // ==================== УДАЛЕНИЕ ФАЙЛА ====================
-        window.deleteSavedFile = async function() {
-            if (!uploadedZipBlob) {
-                alert('Нет сохранённого файла.');
+        // ---------- Кнопка УДАЛИТЬ ----------
+        deleteBtn.addEventListener('click', function() {
+            if (!currentFileBlob) {
+                alert('Нет сохранённого файла для удаления.');
                 return;
             }
-            try {
-                await deleteFileFromDB();
-                uploadedZipBlob = null;
-                uploadedZipName = '';
-                zipStatus.innerHTML = '😴 файл удалён из вечности';
-            } catch (e) {
-                console.error(e);
-                alert('Ошибка при удалении');
-            }
-        };
+            if (!confirm('Точно удалить сохранённый файл?')) return;
 
-        // ==================== DRAG & DROP ====================
-        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-            document.body.addEventListener(eventName, preventDefaults, false);
-        });
-        function preventDefaults(e) {
-            e.preventDefault();
-            e.stopPropagation();
-        }
-
-        document.body.addEventListener('drop', async function(e) {
-            const dt = e.dataTransfer;
-            const file = dt.files[0];
-            if (file && (file.name.endsWith('.zip') || file.name.endsWith('.7z') || file.name.endsWith('.rar'))) {
-                zipInput.files = dt.files;
-                try {
-                    await saveFileToDB(file, file.name);
-                    uploadedZipBlob = file;
-                    uploadedZipName = file.name;
-                    zipStatus.innerHTML = `✅ сохранён (drag&drop): <strong>${file.name}</strong> (${(file.size / 1024 / 1024).toFixed(2)} MB)`;
-                } catch (e) {
-                    console.error(e);
-                    zipStatus.innerHTML = '❌ ошибка сохранения';
-                }
-            } else {
-                alert('Можно перетащить только ZIP/RAR/7Z');
-            }
+            deleteFileFromDB(function() {
+                currentFileBlob = null;
+                currentFileName = '';
+                updateStatus('😴 Файл удалён');
+            }, function(errMsg) {
+                updateStatus('❌ Ошибка удаления: ' + errMsg, true);
+            });
         });
 
-        // ==================== РАБОТА С КАРТИНКОЙ ====================
-        const imageInput = document.getElementById('imageUpload');
-        const uploadedImage = document.getElementById('uploadedImage');
-        const defaultText = document.getElementById('defaultPreviewText');
-
-        imageInput.addEventListener('change', function(event) {
-            const file = event.target.files[0];
+        // ---------- Загрузка картинки (просто для красоты, без сохранения) ----------
+        imageInput.addEventListener('change', function(e) {
+            const file = e.target.files[0];
             if (file && file.type.startsWith('image/')) {
                 const reader = new FileReader();
-                reader.onload = function(e) {
-                    uploadedImage.src = e.target.result;
-                    uploadedImage.style.display = 'inline-block';
-                    defaultText.style.display = 'none';
+                reader.onload = function(ev) {
+                    imagePreview.innerHTML = `<img src="${ev.target.result}" style="max-width:100%; max-height:200px; border-radius:20px; border:4px solid #fec542;">`;
                 };
                 reader.readAsDataURL(file);
             } else {
-                uploadedImage.src = '#';
-                uploadedImage.style.display = 'none';
-                defaultText.style.display = 'flex';
-                if (file) alert('Пожалуйста, выбери картинку');
+                imagePreview.innerHTML = '';
+                if (file) alert('Пожалуйста, выберите изображение');
+            }
+        });
+
+        // ---------- Drag & drop для ZIP (упрощённо) ----------
+        document.body.addEventListener('dragover', function(e) {
+            e.preventDefault();
+        });
+        document.body.addEventListener('drop', function(e) {
+            e.preventDefault();
+            const file = e.dataTransfer.files[0];
+            if (file && (file.name.endsWith('.zip') || file.name.endsWith('.7z') || file.name.endsWith('.rar'))) {
+                // Имитация выбора файла в input
+                zipInput.files = e.dataTransfer.files;
+                // Вручную запустим событие change
+                const event = new Event('change', { bubbles: true });
+                zipInput.dispatchEvent(event);
+            } else {
+                alert('Можно перетащить только ZIP/RAR/7Z');
             }
         });
     </script>
